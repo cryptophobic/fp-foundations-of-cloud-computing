@@ -1,0 +1,18 @@
+{
+  "name": "fp",
+  "version": "1.0.0",
+  "description": "AWS final project — Node.js web app on ECS Fargate",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "private": true
+}
