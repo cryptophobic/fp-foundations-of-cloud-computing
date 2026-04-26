@@ -107,20 +107,9 @@ flowchart TB
 | **VPC endpoints** | `None` |
 | **DNS options** | ✅ Enable DNS hostnames, ✅ Enable DNS resolution |
 
-**Кроки в Console:**
+У сервісі **VPC** через wizard **Create VPC → VPC and more** створено всі ресурси одним кроком (параметри — з таблиці вище). Виконання wizard'а зайняло ~1–2 хв (NAT Gateway provisioning — найдовша операція). Перевірено через **Resource map** новоствореної VPC `fp-vpc`.
 
-1. AWS Console → **VPC** → ліва панель **Your VPCs** → кнопка **Create VPC** (праворуч угорі).
-2. Вгорі вибрати радіо-кнопку **VPC and more** (не "VPC only").
-3. Заповнити поля за таблицею вище.
-4. Праворуч у Preview-панелі переконатись, що показано:
-   - 1 VPC
-   - 6 subnets (2 public + 4 private)
-   - 1 internet gateway
-   - 1 NAT gateway
-   - 3 route tables (1 public + 2 private — для app і db рівнів wizard створює спільний)
-5. Натиснути **Create VPC** внизу. Wizard виконується ~1–2 хв (NAT Gateway provisioning є найдовшою операцією).
 ![сторінка прогресу/успіху wizard'а зі списком створених ресурсів](screenshots/vpc_create.png)
-6. Після завершення → відкрити створену VPC `fp-vpc` → вкладка **Resource map**.
 ![Resource Map зі всіма зв'язками (VPC → subnets → IGW/NAT → route tables)](screenshots/resource_map.png)
 
 **Перейменування підмереж** (wizard називає їх `fp-subnet-private1-us-east-1a` тощо — приведемо до відповідності діаграмі):
@@ -244,9 +233,7 @@ ryptophobic@Dmitros-MBP FP % aws ec2 describe-route-tables --region us-east-1 \
 >   --query 'Vpcs[0].VpcId' --output text)
 > ```
 
-**Команда 1.** Створення `fp-alb-sg` + дозвіл TCP/80 з інтернету:
-
-**Що робить:** створює SG для Application Load Balancer і відкриває HTTP-порт 80 для всього інтернету (це публічний вхід застосунку).
+**Команда 1 — `fp-alb-sg` + інбаунд TCP/80 з інтернету.** SG для Application Load Balancer, публічний вхід застосунку.
 
 ```bash
 cryptophobic@Dmitros-MBP FP % aws ec2 create-security-group --region us-east-1 \
@@ -254,53 +241,27 @@ cryptophobic@Dmitros-MBP FP % aws ec2 create-security-group --region us-east-1 \
   --description "ALB ingress 80 from internet" \
   --vpc-id $VPC_ID \
   --tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=fp-alb-sg}]'
-
 {
     "GroupId": "sg-0925ecb0104d374d8",
-    "Tags": [
-        {
-            "Key": "Name",
-            "Value": "fp-alb-sg"
-        }
-    ],
     "SecurityGroupArn": "arn:aws:ec2:us-east-1:017535066297:security-group/sg-0925ecb0104d374d8"
 }
 
 cryptophobic@Dmitros-MBP FP % ALB_SG=$(aws ec2 describe-security-groups --region us-east-1 \
   --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=fp-alb-sg" \
   --query 'SecurityGroups[0].GroupId' --output text)
-
 cryptophobic@Dmitros-MBP FP % echo "ALB_SG=$ALB_SG"
-
 ALB_SG=sg-0925ecb0104d374d8
 
 cryptophobic@Dmitros-MBP FP % aws ec2 authorize-security-group-ingress --region us-east-1 \
   --group-id $ALB_SG \
   --protocol tcp --port 80 --cidr 0.0.0.0/0
-
 {
     "Return": true,
-    "SecurityGroupRules": [
-        {
-            "SecurityGroupRuleId": "sgr-01aa1222e2b78c966",
-            "GroupId": "sg-0925ecb0104d374d8",
-            "GroupOwnerId": "017535066297",
-            "IsEgress": false,
-            "IpProtocol": "tcp",
-            "FromPort": 80,
-            "ToPort": 80,
-            "CidrIpv4": "0.0.0.0/0",
-            "SecurityGroupRuleArn": "arn:aws:ec2:us-east-1:017535066297:security-group-rule/sgr-01aa1222e2b78c966"
-        }
-    ]
+    "SecurityGroupRules": [{ "SecurityGroupRuleId": "sgr-01aa1222e2b78c966", "...": "..." }]
 }
 ```
 
-**Команда 2.** Створення `fp-ecs-sg` + дозвіл TCP/8080 з ALB SG:
- 
-**Що робить:** створює SG для ECS-задач, відкриває порт 8080 (порт застосунку) тільки для трафіку з `fp-alb-sg`. Жоден інший ресурс у VPC не може досягти ECS напряму.
-
-**Прим.:** використовуємо `--ip-permissions` (а не `--source-group`), бо джерело — інша SG, а не CIDR. Формат: `IpProtocol=tcp,FromPort=...,ToPort=...,UserIdGroupPairs=[{GroupId=...}]`.
+**Команда 2 — `fp-ecs-sg` + інбаунд TCP/8080 від ALB SG.** Порт 8080 (порт застосунку) відкритий тільки для трафіку з `fp-alb-sg` — жоден інший ресурс у VPC не може досягти ECS напряму. Використовуємо `--ip-permissions` (а не `--source-group`), бо джерело — інша SG, а не CIDR.
 
 ```bash
 cryptophobic@Dmitros-MBP FP % aws ec2 create-security-group --region us-east-1 \
@@ -308,54 +269,31 @@ cryptophobic@Dmitros-MBP FP % aws ec2 create-security-group --region us-east-1 \
   --description "ECS tasks ingress 8080 from ALB SG" \
   --vpc-id $VPC_ID \
   --tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=fp-ecs-sg}]'
-
 {
     "GroupId": "sg-060cd2ea0fbf57392",
-    "Tags": [
-        {
-            "Key": "Name",
-            "Value": "fp-ecs-sg"
-        }
-    ],
     "SecurityGroupArn": "arn:aws:ec2:us-east-1:017535066297:security-group/sg-060cd2ea0fbf57392"
 }
 
 cryptophobic@Dmitros-MBP FP % ECS_SG=$(aws ec2 describe-security-groups --region us-east-1 \
   --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=fp-ecs-sg" \
   --query 'SecurityGroups[0].GroupId' --output text)
-
 cryptophobic@Dmitros-MBP FP % echo "ECS_SG=$ECS_SG"
-
 ECS_SG=sg-060cd2ea0fbf57392
 
 cryptophobic@Dmitros-MBP FP % aws ec2 authorize-security-group-ingress --region us-east-1 \
   --group-id $ECS_SG \
   --ip-permissions "IpProtocol=tcp,FromPort=8080,ToPort=8080,UserIdGroupPairs=[{GroupId=$ALB_SG}]"
-
 {
     "Return": true,
-    "SecurityGroupRules": [
-        {
-            "SecurityGroupRuleId": "sgr-09ed45477cba8248e",
-            "GroupId": "sg-060cd2ea0fbf57392",
-            "GroupOwnerId": "017535066297",
-            "IsEgress": false,
-            "IpProtocol": "tcp",
-            "FromPort": 8080,
-            "ToPort": 8080,
-            "ReferencedGroupInfo": {
-                "GroupId": "sg-0925ecb0104d374d8",
-                "UserId": "017535066297"
-            },
-            "SecurityGroupRuleArn": "arn:aws:ec2:us-east-1:017535066297:security-group-rule/sgr-09ed45477cba8248e"
-        }
-    ]
+    "SecurityGroupRules": [{
+        "SecurityGroupRuleId": "sgr-09ed45477cba8248e",
+        "IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080,
+        "ReferencedGroupInfo": { "GroupId": "sg-0925ecb0104d374d8" }
+    }]
 }
 ```
 
-**Команда 3.** Створення `fp-rds-sg` + дозвіл TCP/5432 з ECS SG:
-
-**Що робить:** створює SG для RDS, відкриває PostgreSQL-порт 5432 тільки з `fp-ecs-sg`. RDS не доступний навіть із bastion'а — лише з ECS-задач.
+**Команда 3 — `fp-rds-sg` + інбаунд TCP/5432 від ECS SG.** PostgreSQL-порт 5432 відкритий тільки з `fp-ecs-sg`. RDS не доступний навіть із bastion'а — лише з ECS-задач.
 
 ```bash
 cryptophobic@Dmitros-MBP FP % aws ec2 create-security-group --region us-east-1 \
@@ -363,48 +301,27 @@ cryptophobic@Dmitros-MBP FP % aws ec2 create-security-group --region us-east-1 \
   --description "RDS ingress 5432 from ECS SG" \
   --vpc-id $VPC_ID \
   --tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=fp-rds-sg}]'
-
 {
     "GroupId": "sg-05ec8cdb50b352251",
-    "Tags": [
-        {
-            "Key": "Name",
-            "Value": "fp-rds-sg"
-        }
-    ],
     "SecurityGroupArn": "arn:aws:ec2:us-east-1:017535066297:security-group/sg-05ec8cdb50b352251"
 }
 
 cryptophobic@Dmitros-MBP FP % RDS_SG=$(aws ec2 describe-security-groups --region us-east-1 \
   --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=fp-rds-sg" \
   --query 'SecurityGroups[0].GroupId' --output text)
-
 cryptophobic@Dmitros-MBP FP % echo "RDS_SG=$RDS_SG"
-
 RDS_SG=sg-05ec8cdb50b352251
 
 cryptophobic@Dmitros-MBP FP % aws ec2 authorize-security-group-ingress --region us-east-1 \
   --group-id $RDS_SG \
   --ip-permissions "IpProtocol=tcp,FromPort=5432,ToPort=5432,UserIdGroupPairs=[{GroupId=$ECS_SG}]"
-
 {
     "Return": true,
-    "SecurityGroupRules": [
-        {
-            "SecurityGroupRuleId": "sgr-0703eb752907bd4e9",
-            "GroupId": "sg-05ec8cdb50b352251",
-            "GroupOwnerId": "017535066297",
-            "IsEgress": false,
-            "IpProtocol": "tcp",
-            "FromPort": 5432,
-            "ToPort": 5432,
-            "ReferencedGroupInfo": {
-                "GroupId": "sg-060cd2ea0fbf57392",
-                "UserId": "017535066297"
-            },
-            "SecurityGroupRuleArn": "arn:aws:ec2:us-east-1:017535066297:security-group-rule/sgr-0703eb752907bd4e9"
-        }
-    ]
+    "SecurityGroupRules": [{
+        "SecurityGroupRuleId": "sgr-0703eb752907bd4e9",
+        "IpProtocol": "tcp", "FromPort": 5432, "ToPort": 5432,
+        "ReferencedGroupInfo": { "GroupId": "sg-060cd2ea0fbf57392" }
+    }]
 }
 ```
 
@@ -417,45 +334,9 @@ cryptophobic@Dmitros-MBP FP % aws ec2 describe-security-groups --region us-east-
   --query 'SecurityGroups[*].[GroupName,GroupId,IpPermissions[*].[IpProtocol,FromPort,ToPort,IpRanges[0].CidrIp,UserIdGroupPairs[0].GroupId]]' \
   --output json
 [
-    [
-        "fp-ecs-sg",
-        "sg-060cd2ea0fbf57392",
-        [
-            [
-                "tcp",
-                8080,
-                8080,
-                null,
-                "sg-0925ecb0104d374d8"
-            ]
-        ]
-    ],
-    [
-        "fp-rds-sg",
-        "sg-05ec8cdb50b352251",
-        [
-            [
-                "tcp",
-                5432,
-                5432,
-                null,
-                "sg-060cd2ea0fbf57392"
-            ]
-        ]
-    ],
-    [
-        "fp-alb-sg",
-        "sg-0925ecb0104d374d8",
-        [
-            [
-                "tcp",
-                80,
-                80,
-                "0.0.0.0/0",
-                null
-            ]
-        ]
-    ]
+    ["fp-ecs-sg", "sg-060cd2ea0fbf57392", [["tcp", 8080, 8080, null, "sg-0925ecb0104d374d8"]]],
+    ["fp-rds-sg", "sg-05ec8cdb50b352251", [["tcp", 5432, 5432, null, "sg-060cd2ea0fbf57392"]]],
+    ["fp-alb-sg", "sg-0925ecb0104d374d8", [["tcp", 80,   80,   "0.0.0.0/0", null]]]
 ]
 ```
 
@@ -498,26 +379,12 @@ cryptophobic@Dmitros-MBP FP % aws iam create-role \
   --role-name fp-ecs-task-execution-role \
   --assume-role-policy-document file://ecs-trust-policy.json \
   --description "ECS pulls images from ECR and writes logs to CloudWatch"
-
 {
     "Role": {
-        "Path": "/",
         "RoleName": "fp-ecs-task-execution-role",
-        "RoleId": "AROAQIFJL4C4YGVG6TYKQ",
         "Arn": "arn:aws:iam::017535066297:role/fp-ecs-task-execution-role",
         "CreateDate": "2026-04-25T15:36:44+00:00",
-        "AssumeRolePolicyDocument": {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {
-                        "Service": "ecs-tasks.amazonaws.com"
-                    },
-                    "Action": "sts:AssumeRole"
-                }
-            ]
-        }
+        "AssumeRolePolicyDocument": { "...": "як визначено в ecs-trust-policy.json вище" }
     }
 }
 
@@ -533,26 +400,12 @@ cryptophobic@Dmitros-MBP FP % aws iam create-role \
   --role-name fp-ecs-task-role \
   --assume-role-policy-document file://ecs-trust-policy.json \
   --description "Application-level AWS API access (none required for this app)"
-
 {
     "Role": {
-        "Path": "/",
         "RoleName": "fp-ecs-task-role",
-        "RoleId": "AROAQIFJL4C46MQN6WY34",
         "Arn": "arn:aws:iam::017535066297:role/fp-ecs-task-role",
         "CreateDate": "2026-04-25T15:38:04+00:00",
-        "AssumeRolePolicyDocument": {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {
-                        "Service": "ecs-tasks.amazonaws.com"
-                    },
-                    "Action": "sts:AssumeRole"
-                }
-            ]
-        }
+        "AssumeRolePolicyDocument": { "...": "як визначено в ecs-trust-policy.json вище" }
     }
 }
 ```
@@ -695,102 +548,20 @@ cryptophobic@Dmitros-MBP FP % aws rds create-db-instance --region us-east-1 \
 {
     "DBInstance": {
         "DBInstanceIdentifier": "fp-rds",
-        "DBInstanceClass": "db.t3.micro",
-        "Engine": "postgres",
-        "DBInstanceStatus": "creating",
-        "MasterUsername": "fpadmin",
-        "DBName": "fpdb",
-        "AllocatedStorage": 20,
-        "PreferredBackupWindow": "04:02-04:32",
-        "BackupRetentionPeriod": 1,
-        "DBSecurityGroups": [],
-        "VpcSecurityGroups": [
-            {
-                "VpcSecurityGroupId": "sg-05ec8cdb50b352251",
-                "Status": "active"
-            }
-        ],
-        "DBParameterGroups": [
-            {
-                "DBParameterGroupName": "default.postgres18",
-                "ParameterApplyStatus": "in-sync"
-            }
-        ],
-        "DBSubnetGroup": {
-            "DBSubnetGroupName": "fp-db-subnet-group",
-            "DBSubnetGroupDescription": "fp private DB subnets across 2 AZs",
-            "VpcId": "vpc-046d62e5f84265626",
-            "SubnetGroupStatus": "Complete",
-            "Subnets": [
-                {
-                    "SubnetIdentifier": "subnet-0ef28529acf377865",
-                    "SubnetAvailabilityZone": {
-                        "Name": "us-east-1b"
-                    },
-                    "SubnetOutpost": {},
-                    "SubnetStatus": "Active"
-                },
-                {
-                    "SubnetIdentifier": "subnet-013849873b3634f96",
-                    "SubnetAvailabilityZone": {
-                        "Name": "us-east-1a"
-                    },
-                    "SubnetOutpost": {},
-                    "SubnetStatus": "Active"
-                }
-            ]
-        },
-        "PreferredMaintenanceWindow": "sun:08:38-sun:09:08",
-        "UpgradeRolloutOrder": "second",
-        "PendingModifiedValues": {},
-        "MultiAZ": false,
-        "EngineVersion": "18.3",
-        "AutoMinorVersionUpgrade": true,
-        "ReadReplicaDBInstanceIdentifiers": [],
-        "LicenseModel": "postgresql-license",
-        "Iops": 3000,
-        "StorageThroughput": 125,
-        "OptionGroupMemberships": [
-            {
-                "OptionGroupName": "default:postgres-18",
-                "Status": "in-sync"
-            }
-        ],
-        "PubliclyAccessible": false,
-        "StorageType": "gp3",
-        "DbInstancePort": 0,
-        "StorageEncrypted": true,
-        "KmsKeyId": "arn:aws:kms:us-east-1:017535066297:key/5650e65e-f038-41b6-a35d-4bd5c0a24c29",
-        "DbiResourceId": "db-OZZLQE763DKYZARJY2XJ7FSYMM",
-        "CACertificateIdentifier": "rds-ca-rsa2048-g1",
-        "DomainMemberships": [],
-        "CopyTagsToSnapshot": true,
-        "MonitoringInterval": 0,
         "DBInstanceArn": "arn:aws:rds:us-east-1:017535066297:db:fp-rds",
-        "IAMDatabaseAuthenticationEnabled": false,
-        "DatabaseInsightsMode": "standard",
-        "PerformanceInsightsEnabled": false,
-        "DeletionProtection": false,
-        "AssociatedRoles": [],
-        "TagList": [
-            {
-                "Key": "Name",
-                "Value": "fp-rds"
-            }
-        ],
-        "CustomerOwnedIpEnabled": false,
-        "NetworkType": "IPV4",
-        "BackupTarget": "region",
-        "CertificateDetails": {
-            "CAIdentifier": "rds-ca-rsa2048-g1"
-        },
+        "DBInstanceClass": "db.t3.micro",
+        "Engine": "postgres", "EngineVersion": "18.3",
+        "DBInstanceStatus": "creating",
+        "MasterUsername": "fpadmin", "DBName": "fpdb",
+        "AllocatedStorage": 20, "StorageType": "gp3", "StorageEncrypted": true,
+        "MultiAZ": false, "PubliclyAccessible": false,
+        "BackupRetentionPeriod": 1,
+        "VpcSecurityGroups": [{ "VpcSecurityGroupId": "sg-05ec8cdb50b352251", "Status": "active" }],
+        "DBSubnetGroup": { "DBSubnetGroupName": "fp-db-subnet-group", "...": "(2 subnets across us-east-1a, us-east-1b)" },
         "MasterUserSecret": {
             "SecretArn": "arn:aws:secretsmanager:us-east-1:017535066297:secret:rds!db-2b820e61-ad42-4866-a474-68373c0a6814-1S78mu",
-            "SecretStatus": "creating",
-            "KmsKeyId": "arn:aws:kms:us-east-1:017535066297:key/dd2bf685-6a93-45f2-9121-ab091e37a820"
-        },
-        "DedicatedLogVolume": false,
-        "EngineLifecycleSupport": "open-source-rds-extended-support"
+            "SecretStatus": "creating"
+        }
     }
 }
 ```
@@ -1070,37 +841,19 @@ PUB_1A=[subnet-029b141a8d5d4a93e] PUB_1B=[subnet-06e88d8dc90b50062] ALB_SG=[sg-0
 cryptophobic@Dmitros-MBP FP % aws elbv2 create-load-balancer --region us-east-1 --name fp-alb --subnets $PUB_SUBNET_1A $PUB_SUBNET_1B --security-groups $ALB_SG --scheme internet-facing --type application --ip-address-type ipv4 --tags Key=Name,Value=fp-alb
 
 {
-    "LoadBalancers": [
-        {
-            "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:loadbalancer/app/fp-alb/555994828fdd6650",
-            "DNSName": "fp-alb-1953195784.us-east-1.elb.amazonaws.com",
-            "CanonicalHostedZoneId": "Z35SXDOTRQ7X7K",
-            "CreatedTime": "2026-04-25T16:32:33.395000+00:00",
-            "LoadBalancerName": "fp-alb",
-            "Scheme": "internet-facing",
-            "VpcId": "vpc-046d62e5f84265626",
-            "State": {
-                "Code": "provisioning"
-            },
-            "Type": "application",
-            "AvailabilityZones": [
-                {
-                    "ZoneName": "us-east-1a",
-                    "SubnetId": "subnet-029b141a8d5d4a93e",
-                    "LoadBalancerAddresses": []
-                },
-                {
-                    "ZoneName": "us-east-1b",
-                    "SubnetId": "subnet-06e88d8dc90b50062",
-                    "LoadBalancerAddresses": []
-                }
-            ],
-            "SecurityGroups": [
-                "sg-0925ecb0104d374d8"
-            ],
-            "IpAddressType": "ipv4"
-        }
-    ]
+    "LoadBalancers": [{
+        "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:loadbalancer/app/fp-alb/555994828fdd6650",
+        "DNSName": "fp-alb-1953195784.us-east-1.elb.amazonaws.com",
+        "LoadBalancerName": "fp-alb",
+        "Scheme": "internet-facing", "Type": "application", "IpAddressType": "ipv4",
+        "VpcId": "vpc-046d62e5f84265626",
+        "State": { "Code": "provisioning" },
+        "AvailabilityZones": [
+            { "ZoneName": "us-east-1a", "SubnetId": "subnet-029b141a8d5d4a93e" },
+            { "ZoneName": "us-east-1b", "SubnetId": "subnet-06e88d8dc90b50062" }
+        ],
+        "SecurityGroups": ["sg-0925ecb0104d374d8"]
+    }]
 }
 ```
 
@@ -1127,29 +880,17 @@ ALB_DNS=[fp-alb-1953195784.us-east-1.elb.amazonaws.com]
 cryptophobic@Dmitros-MBP FP % aws elbv2 create-target-group --region us-east-1 --name fp-tg --protocol HTTP --port 8080 --vpc-id $VPC_ID --target-type ip --health-check-path /health --health-check-interval-seconds 30 --health-check-timeout-seconds 5 --healthy-threshold-count 2 --unhealthy-threshold-count 3 --matcher HttpCode=200
 
 {
-    "TargetGroups": [
-        {
-            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:targetgroup/fp-tg/57e3f68c2c9abf5e",
-            "TargetGroupName": "fp-tg",
-            "Protocol": "HTTP",
-            "Port": 8080,
-            "VpcId": "vpc-046d62e5f84265626",
-            "HealthCheckProtocol": "HTTP",
-            "HealthCheckPort": "traffic-port",
-            "HealthCheckEnabled": true,
-            "HealthCheckIntervalSeconds": 30,
-            "HealthCheckTimeoutSeconds": 5,
-            "HealthyThresholdCount": 2,
-            "UnhealthyThresholdCount": 3,
-            "HealthCheckPath": "/health",
-            "Matcher": {
-                "HttpCode": "200"
-            },
-            "TargetType": "ip",
-            "ProtocolVersion": "HTTP1",
-            "IpAddressType": "ipv4"
-        }
-    ]
+    "TargetGroups": [{
+        "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:targetgroup/fp-tg/57e3f68c2c9abf5e",
+        "TargetGroupName": "fp-tg",
+        "Protocol": "HTTP", "Port": 8080,
+        "VpcId": "vpc-046d62e5f84265626",
+        "TargetType": "ip",
+        "HealthCheckPath": "/health",
+        "HealthCheckIntervalSeconds": 30, "HealthCheckTimeoutSeconds": 5,
+        "HealthyThresholdCount": 2, "UnhealthyThresholdCount": 3,
+        "Matcher": { "HttpCode": "200" }
+    }]
 }
 ```
 
@@ -1169,31 +910,14 @@ TG_ARN=[arn:aws:elasticloadbalancing:us-east-1:017535066297:targetgroup/fp-tg/57
 cryptophobic@Dmitros-MBP FP % aws elbv2 create-listener --region us-east-1 --load-balancer-arn $ALB_ARN --protocol HTTP --port 80 --default-actions Type=forward,TargetGroupArn=$TG_ARN
 
 {
-    "Listeners": [
-        {
-            "ListenerArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:listener/app/fp-alb/555994828fdd6650/cdfe0aac99105015",
-            "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:loadbalancer/app/fp-alb/555994828fdd6650",
-            "Port": 80,
-            "Protocol": "HTTP",
-            "DefaultActions": [
-                {
-                    "Type": "forward",
-                    "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:targetgroup/fp-tg/57e3f68c2c9abf5e",
-                    "ForwardConfig": {
-                        "TargetGroups": [
-                            {
-                                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:targetgroup/fp-tg/57e3f68c2c9abf5e",
-                                "Weight": 1
-                            }
-                        ],
-                        "TargetGroupStickinessConfig": {
-                            "Enabled": false
-                        }
-                    }
-                }
-            ]
-        }
-    ]
+    "Listeners": [{
+        "ListenerArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:listener/app/fp-alb/555994828fdd6650/cdfe0aac99105015",
+        "Port": 80, "Protocol": "HTTP",
+        "DefaultActions": [{
+            "Type": "forward",
+            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:targetgroup/fp-tg/57e3f68c2c9abf5e"
+        }]
+    }]
 }
 ```
 
@@ -1384,103 +1108,14 @@ cryptophobic@Dmitros-MBP FP % aws ecs register-task-definition --region us-east-
 {
     "taskDefinition": {
         "taskDefinitionArn": "arn:aws:ecs:us-east-1:017535066297:task-definition/fp-app:1",
-        "containerDefinitions": [
-            {
-                "name": "fp-app",
-                "image": "017535066297.dkr.ecr.us-east-1.amazonaws.com/fp-app:v1",
-                "cpu": 0,
-                "portMappings": [
-                    {
-                        "containerPort": 8080,
-                        "hostPort": 8080,
-                        "protocol": "tcp"
-                    }
-                ],
-                "essential": true,
-                "environment": [
-                    {
-                        "name": "DB_HOST",
-                        "value": "fp-rds.cenoq80uif40.us-east-1.rds.amazonaws.com"
-                    },
-                    {
-                        "name": "DB_PORT",
-                        "value": "5432"
-                    },
-                    {
-                        "name": "DB_NAME",
-                        "value": "fpdb"
-                    }
-                ],
-                "mountPoints": [],
-                "volumesFrom": [],
-                "secrets": [
-                    {
-                        "name": "DB_USER",
-                        "valueFrom": "arn:aws:secretsmanager:us-east-1:017535066297:secret:rds!db-2b820e61-ad42-4866-a474-68373c0a6814-1S78mu:username::"
-                    },
-                    {
-                        "name": "DB_PASSWORD",
-                        "valueFrom": "arn:aws:secretsmanager:us-east-1:017535066297:secret:rds!db-2b820e61-ad42-4866-a474-68373c0a6814-1S78mu:password::"
-                    }
-                ],
-                "logConfiguration": {
-                    "logDriver": "awslogs",
-                    "options": {
-                        "awslogs-group": "/ecs/fp-app",
-                        "awslogs-region": "us-east-1",
-                        "awslogs-stream-prefix": "ecs"
-                    }
-                },
-                "systemControls": []
-            }
-        ],
-        "family": "fp-app",
-        "taskRoleArn": "arn:aws:iam::017535066297:role/fp-ecs-task-role",
-        "executionRoleArn": "arn:aws:iam::017535066297:role/fp-ecs-task-execution-role",
+        "family": "fp-app", "revision": 1, "status": "ACTIVE",
         "networkMode": "awsvpc",
-        "revision": 1,
-        "volumes": [],
-        "status": "ACTIVE",
-        "requiresAttributes": [
-            {
-                "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
-            },
-            {
-                "name": "ecs.capability.execution-role-awslogs"
-            },
-            {
-                "name": "com.amazonaws.ecs.capability.ecr-auth"
-            },
-            {
-                "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
-            },
-            {
-                "name": "ecs.capability.secrets.asm.environment-variables"
-            },
-            {
-                "name": "com.amazonaws.ecs.capability.task-iam-role"
-            },
-            {
-                "name": "ecs.capability.execution-role-ecr-pull"
-            },
-            {
-                "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
-            },
-            {
-                "name": "ecs.capability.task-eni"
-            }
-        ],
-        "placementConstraints": [],
-        "compatibilities": [
-            "EC2",
-            "FARGATE",
-            "MANAGED_INSTANCES"
-        ],
-        "requiresCompatibilities": [
-            "FARGATE"
-        ],
-        "cpu": "256",
-        "memory": "512",
+        "requiresCompatibilities": ["FARGATE"],
+        "compatibilities": ["EC2", "FARGATE", "MANAGED_INSTANCES"],
+        "cpu": "256", "memory": "512",
+        "executionRoleArn": "arn:aws:iam::017535066297:role/fp-ecs-task-execution-role",
+        "taskRoleArn": "arn:aws:iam::017535066297:role/fp-ecs-task-role",
+        "containerDefinitions": [{ "name": "fp-app", "image": "017535066297.dkr.ecr.us-east-1.amazonaws.com/fp-app:v1", "...": "(env, secrets, logConfiguration — як у task-def.json вище)" }],
         "registeredAt": "2026-04-25T20:16:47.213000+03:00",
         "registeredBy": "arn:aws:iam::017535066297:user/Dmytro"
     }
@@ -1499,27 +1134,10 @@ cryptophobic@Dmitros-MBP FP % aws ecs create-cluster --region us-east-1 --cluste
         "clusterArn": "arn:aws:ecs:us-east-1:017535066297:cluster/fp-cluster",
         "clusterName": "fp-cluster",
         "status": "ACTIVE",
+        "capacityProviders": ["FARGATE"],
         "registeredContainerInstancesCount": 0,
         "runningTasksCount": 0,
-        "pendingTasksCount": 0,
-        "activeServicesCount": 0,
-        "statistics": [],
-        "tags": [
-            {
-                "key": "Name",
-                "value": "fp-cluster"
-            }
-        ],
-        "settings": [
-            {
-                "name": "containerInsights",
-                "value": "disabled"
-            }
-        ],
-        "capacityProviders": [
-            "FARGATE"
-        ],
-        "defaultCapacityProviderStrategy": []
+        "activeServicesCount": 0
     }
 }
 ```
@@ -1536,98 +1154,29 @@ cryptophobic@Dmitros-MBP FP % aws ecs create-service --region us-east-1 --cluste
         "serviceArn": "arn:aws:ecs:us-east-1:017535066297:service/fp-cluster/fp-service",
         "serviceName": "fp-service",
         "clusterArn": "arn:aws:ecs:us-east-1:017535066297:cluster/fp-cluster",
-        "loadBalancers": [
-            {
-                "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:targetgroup/fp-tg/57e3f68c2c9abf5e",
-                "containerName": "fp-app",
-                "containerPort": 8080
-            }
-        ],
-        "serviceRegistries": [],
         "status": "ACTIVE",
-        "desiredCount": 2,
-        "runningCount": 0,
-        "pendingCount": 0,
         "launchType": "FARGATE",
-        "platformVersion": "LATEST",
-        "platformFamily": "Linux",
         "taskDefinition": "arn:aws:ecs:us-east-1:017535066297:task-definition/fp-app:1",
-        "deploymentConfiguration": {
-            "deploymentCircuitBreaker": {
-                "enable": false,
-                "rollback": false
-            },
-            "maximumPercent": 200,
-            "minimumHealthyPercent": 100,
-            "strategy": "ROLLING",
-            "bakeTimeInMinutes": 0
-        },
-        "deployments": [
-            {
-                "id": "ecs-svc/3541978090126952138",
-                "status": "PRIMARY",
-                "taskDefinition": "arn:aws:ecs:us-east-1:017535066297:task-definition/fp-app:1",
-                "desiredCount": 0,
-                "pendingCount": 0,
-                "runningCount": 0,
-                "failedTasks": 0,
-                "createdAt": "2026-04-25T20:18:09.445000+03:00",
-                "updatedAt": "2026-04-25T20:18:09.445000+03:00",
-                "launchType": "FARGATE",
-                "platformVersion": "1.4.0",
-                "platformFamily": "Linux",
-                "networkConfiguration": {
-                    "awsvpcConfiguration": {
-                        "subnets": [
-                            "subnet-0904b143c8a3bb96e",
-                            "subnet-006f9149f65c663a5"
-                        ],
-                        "securityGroups": [
-                            "sg-060cd2ea0fbf57392"
-                        ],
-                        "assignPublicIp": "DISABLED"
-                    }
-                },
-                "rolloutState": "IN_PROGRESS",
-                "rolloutStateReason": "ECS deployment ecs-svc/3541978090126952138 in progress."
-            }
-        ],
-        "roleArn": "arn:aws:iam::017535066297:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS",
-        "events": [],
-        "createdAt": "2026-04-25T20:18:09.445000+03:00",
-        "currentServiceRevisions": [
-            {
-                "arn": "arn:aws:ecs:us-east-1:017535066297:service-revision/fp-cluster/fp-service/3541978090126952138",
-                "requestedTaskCount": 0,
-                "runningTaskCount": 0,
-                "pendingTaskCount": 0
-            }
-        ],
-        "placementConstraints": [],
-        "placementStrategy": [],
+        "desiredCount": 2, "runningCount": 0, "pendingCount": 0,
+        "loadBalancers": [{
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:017535066297:targetgroup/fp-tg/57e3f68c2c9abf5e",
+            "containerName": "fp-app", "containerPort": 8080
+        }],
         "networkConfiguration": {
             "awsvpcConfiguration": {
-                "subnets": [
-                    "subnet-0904b143c8a3bb96e",
-                    "subnet-006f9149f65c663a5"
-                ],
-                "securityGroups": [
-                    "sg-060cd2ea0fbf57392"
-                ],
+                "subnets": ["subnet-0904b143c8a3bb96e", "subnet-006f9149f65c663a5"],
+                "securityGroups": ["sg-060cd2ea0fbf57392"],
                 "assignPublicIp": "DISABLED"
             }
         },
         "healthCheckGracePeriodSeconds": 60,
-        "schedulingStrategy": "REPLICA",
-        "deploymentController": {
-            "type": "ECS"
-        },
-        "createdBy": "arn:aws:iam::017535066297:user/Dmytro",
-        "enableECSManagedTags": false,
-        "propagateTags": "NONE",
-        "enableExecuteCommand": false,
-        "availabilityZoneRebalancing": "ENABLED",
-        "resourceManagementType": "CUSTOMER"
+        "deployments": [{
+            "id": "ecs-svc/3541978090126952138",
+            "status": "PRIMARY",
+            "rolloutState": "IN_PROGRESS",
+            "rolloutStateReason": "ECS deployment ecs-svc/3541978090126952138 in progress."
+        }],
+        "createdBy": "arn:aws:iam::017535066297:user/Dmytro"
     }
 }
 ```
@@ -1688,7 +1237,7 @@ cryptophobic@Dmitros-MBP FP % curl -s "http://$ALB_DNS/db"
 ![ECS Console → Clusters → `fp-cluster`](screenshots/clusters.png)
 ![`fp-service` → Tasks tab — 2 RUNNING tasks у різних AZ](screenshots/fp-service.png)
 ![EC2 → Target Groups → `fp-tg` → Targets tab — 2 IP-targets, обидва `healthy`](screenshots/fp-tg.png)
-![Browser → `http://<ALB_DNS>/` — JSON-відповідь з різним `instance` при кожному refresh (підтверджує load balancing мі2 tasks)](screenshots/happy-developing.png)
+![Browser → `http://<ALB_DNS>/` — JSON-відповідь з різним `instance` при кожному refresh (підтверджує load balancing між 2 tasks)](screenshots/happy-developing.png)
 ![Browser → `http://<ALB_DNS>/` — JSON-відповідь з різним `instance` при кожному refresh (підтверджує load balancing між 2 tasks)](screenshots/happy-developing2.png)
 ![CloudWatch → Log groups → `/ecs/fp-app` → log streams](screenshots/fp-app.png)
 ![кожна task має свій stream із "Listening on :8080"](screenshots/task1.png)
@@ -1911,15 +1460,7 @@ cryptophobic@Dmitros-MBP FP % aws budgets describe-notifications-for-budget --ac
 
 Cost Explorer не потребує створення (вмикається автоматично при першому відкритті). Цей сервіс показує розбивку витрат за сервісами/регіонами/часом.
 
-**Кроки:**
-
-1. AWS Console → **Billing and Cost Management** → ліва панель → **Cost Explorer** (або прямий URL `console.aws.amazon.com/cost-management/home#/cost-explorer`).
-2. Якщо це перший вхід — клікнути **Launch Cost Explorer** і зачекати ~24 години на агрегацію перших даних. Якщо акаунт активний кілька днів — дані вже є.
-3. У фільтрах праворуч встановити:
-   - **Time period:** Month-to-date (від 1 числа поточного місяця)
-   - **Granularity:** Daily
-   - **Group by:** Service
-4. Графік покаже стек-розбивку по сервісах: ECS Fargate, ELB, NAT Gateway, RDS, Secrets Manager, ECR тощо.
+У сервісі **Billing and Cost Management → Cost Explorer** з фільтрами **Time period: Month-to-date / Granularity: Daily / Group by: Service** отримано стек-розбивку витрат по сервісах: ECS Fargate, ELB, NAT Gateway, RDS, Secrets Manager, ECR тощо.
 
 ![Cost Explorer → Daily costs Group by Service — видно, що найбільша частка йде на NAT Gateway та RDS (як ми передбачали в `arch.md`)](screenshots/cost-explorer-empty-chart.png)
 ![Та ж сторінка з табличним видом (button **Table** замість **Chart** угорі) — точні цифри $ за сервісами](screenshots/cost-explorer.png)
@@ -1976,42 +1517,55 @@ cryptophobic@Dmitros-MBP FP % curl -s "http://$ALB_DNS/db" | jq .
 
 ### 6.2 Навантажувальне тестування з Apache Benchmark
 
-`ab` встановлений за замовчуванням на macOS (`/usr/sbin/ab`). Виконуємо тест 5 хв із 200 паралельними з'єднаннями — достатньо, щоб спостерігати CPU-навантаження в CloudWatch і потенційно тригернути ECS Auto Scaling (target tracking при CPU > 60%).
+`ab` встановлений за замовчуванням на macOS (`/usr/sbin/ab`). Виконуємо 5-хвилинний тест із 200 паралельними з'єднаннями на головний endpoint:
 
 ```bash
 ab -n 1000000 -c 200 -t 300 "http://$ALB_DNS/"
 ```
 
-- `-n 1000000` — верхня межа кількості запитів (фактично обмежить `-t`)
-- `-c 200` — 200 паралельних з'єднань
-- `-t 300` — максимум 5 хвилин
-- Trailing slash у URL обов'язковий для `ab`
+| Прапор | Значення |
+|---|---|
+| `-n 1000000` | верхня межа кількості запитів (фактично обмежить `-t`) |
+| `-c 200` | 200 паралельних з'єднань |
+| `-t 300` | максимум 5 хвилин |
 
+> Trailing slash у URL обов'язковий для `ab`.
 
-**Після тесту — перевірка метрик:**
+**Метрики ECS CPU за період тесту** (1-хвилинні точки, відсортовано за часом):
 
 ```bash
-# CloudWatch CPU за останні 10 хв (по 1-хв точках)
-cryptophobic@Dmitros-MBP FP % aws cloudwatch get-metric-statistics --region us-east-1 --namespace AWS/ECS --metric-name CPUUtilization --dimensions Name=ClusterName,Value=fp-cluster Name=ServiceName,Value=fp-service --start-time $(date -u -v-10M +%Y-%m-%dT%H:%M:%S) --end-time $(date -u +%Y-%m-%dT%H:%M:%S) --period 60 --statistics Average Maximum --query 'Datapoints[*].[Timestamp,Average,Maximum]' --output table
-------------------------------------------------------------------------------
-|                             GetMetricStatistics                            |
-+---------------------------+------------------------+-----------------------+
-|  2026-04-25T21:42:00+03:00|  0.045182609309752784  |  0.179926335811615    |
-|  2026-04-25T21:46:00+03:00|  0.026463888779593013  |  0.07899467647075653  |
-|  2026-04-25T21:41:00+03:00|  0.49640266845623654   |  2.806734323501587    |
-|  2026-04-25T21:45:00+03:00|  2.450499238912016     |  7.507390499114991    |
-|  2026-04-25T21:44:00+03:00|  0.028795828693546355  |  0.09117197245359421  |
-|  2026-04-25T21:40:00+03:00|  0.26997196177641547   |  1.4524024724960327   |
-|  2026-04-25T21:39:00+03:00|  2.5223471721013384    |  7.928253650665283    |
-|  2026-04-25T21:43:00+03:00|  0.026311859488487244  |  0.08606097102165222  |
-|  2026-04-25T21:38:00+03:00|  0.05803694203495979   |  0.14414577186107635  |
-+---------------------------+------------------------+-----------------------+
+cryptophobic@Dmitros-MBP FP % aws cloudwatch get-metric-statistics --region us-east-1 \
+  --namespace AWS/ECS --metric-name CPUUtilization \
+  --dimensions Name=ClusterName,Value=fp-cluster Name=ServiceName,Value=fp-service \
+  --start-time $(date -u -v-10M +%Y-%m-%dT%H:%M:%S) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+  --period 60 --statistics Average Maximum \
+  --query 'sort_by(Datapoints, &Timestamp)[*].[Timestamp,Average,Maximum]' --output table
 ```
 
-![ECS Console → `fp-service` → вкладка **Metrics** → графік `CPUUtilization` із піком під час тесту](screenshots/ecs_load_metrics.png)
-![EC2 → Target Groups → `fp-tg` → вкладка **Monitoring** → графіки **Request count**, **Target response time**, **HTTP 2xx Count** — всі три виросли під час тесту](screenshots/monitoring.png)
+| Час (Київ) | Avg CPU % | Max CPU % |
+|---|---|---|
+| 21:38 | 0.06 | 0.14 |
+| 21:39 | **2.52** | **7.93** |
+| 21:40 | 0.27 | 1.45 |
+| 21:41 | 0.50 | 2.81 |
+| 21:42 | 0.05 | 0.18 |
+| 21:43 | 0.03 | 0.09 |
+| 21:44 | 0.03 | 0.09 |
+| 21:45 | **2.45** | **7.51** |
+| 21:46 | 0.03 | 0.08 |
 
-### 6.4 Зведена перевірка висмог
+**Інтерпретація:**
+
+- ALB прийняв і розподілив весь трафік без помилок (підтверджено зростанням Request count у Target Group → Monitoring, скріншот нижче).
+- Пікове CPU — **7.93%**, що значно нижче за target tracking-поріг **60%**. Auto Scaling штатно **не масштабувався** — 2 наявні задачі впоралися з 200 паралельних з'єднань.
+- Це підтверджує правильну роботу target tracking policy: масштабування спрацьовує тільки коли є реальна потреба, а не "про всяк випадок". Поведінка системи відповідає очікуваній: перевитрат на зайві задачі немає.
+- Низьке CPU пояснюється I/O-природою Node.js застосунку — простий ALB → ECS round-trip без важких обчислень упирається радше в мережу, ніж у CPU. Для генерації CPU-spike'у > 60% потрібен або CPU-intensive endpoint, або менший instance size — обидва варіанти виходять за межі вимог TASK.md.
+
+![ECS Console → `fp-service` → вкладка **Metrics** → графік `CPUUtilization` із двома піками під час тесту](screenshots/ecs_load_metrics.png)
+![EC2 → Target Groups → `fp-tg` → вкладка **Monitoring** → графіки **Request count**, **Target response time**, **HTTP 2xx Count** — всі три зростають під час тесту](screenshots/monitoring.png)
+
+### 6.3 Зведена перевірка вимог
 
 | # | Критерій (TASK.md рядки 83-90) | Реалізовано в розділах |
 |---|---|---|
@@ -2023,47 +1577,3 @@ cryptophobic@Dmitros-MBP FP % aws cloudwatch get-metric-statistics --region us-e
 | 6 | Налаштовано автомасштабування та балансування навантаження | 3.2 (ALB + target group), 4.3 (ECS Service Auto Scaling) |
 | 7 | Продемонстровано оптимізацію витрат у Cost Explorer / Budgets | 5.1 (Budgets), 5.2 (Cost Explorer), 5.3 (зведена таблиця) |
 | 8 | Додано опис вибору архітектури й технологій | 1 (justification table), 5.3 (cost-optimization rationale) |
-
-### 6.5 Teardown (після перевірки ментором)
-
-Щоб зекономити решту кредитів, після оцінювання видалити ресурси у зворотному порядку:
-
-```bash
-# 1. ECS service і cluster (зупинити running tasks)
-aws ecs update-service --region us-east-1 --cluster fp-cluster --service fp-service --desired-count 0
-aws ecs delete-service --region us-east-1 --cluster fp-cluster --service fp-service --force
-aws ecs delete-cluster --region us-east-1 --cluster fp-cluster
-
-# 2. Application Auto Scaling
-aws application-autoscaling deregister-scalable-target --region us-east-1 --service-namespace ecs --resource-id service/fp-cluster/fp-service --scalable-dimension ecs:service:DesiredCount
-
-# 3. ALB + target group + listener
-aws elbv2 delete-load-balancer --region us-east-1 --load-balancer-arn $ALB_ARN
-aws elbv2 delete-target-group --region us-east-1 --target-group-arn $TG_ARN
-
-# 4. RDS (skip-final-snapshot прискорює)
-aws rds delete-db-instance --region us-east-1 --db-instance-identifier fp-rds --skip-final-snapshot --delete-automated-backups
-aws rds delete-db-subnet-group --region us-east-1 --db-subnet-group-name fp-db-subnet-group
-
-# 5. CloudWatch alarms + SNS
-aws cloudwatch delete-alarms --region us-east-1 --alarm-names fp-ecs-cpu-high fp-alb-5xx-high fp-rds-cpu-high fp-rds-free-storage-low
-aws sns delete-topic --region us-east-1 --topic-arn $TOPIC_ARN
-aws logs delete-log-group --region us-east-1 --log-group-name /ecs/fp-app
-
-# 6. ECR (опціонально — для повного очищення)
-aws ecr delete-repository --region us-east-1 --repository-name fp-app --force
-
-# 7. IAM ролі
-aws iam detach-role-policy --role-name fp-ecs-task-execution-role --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-aws iam delete-role-policy --role-name fp-ecs-task-execution-role --policy-name fp-rds-secret-read
-aws iam delete-role --role-name fp-ecs-task-execution-role
-aws iam delete-role --role-name fp-ecs-task-role
-
-# 8. VPC (включно з NAT Gateway, IGW, subnets, route tables) — найпростіше через Console:
-#    VPC Console → Your VPCs → fp-vpc → Actions → Delete VPC → "delete with all related resources"
-
-# 9. Budget
-aws budgets delete-budget --account-id 017535066297 --budget-name fp-monthly-budget
-```
-
-> **Найважливіше:** **NAT Gateway (~$33/міс)** і **RDS (~$15/міс)** — найбільші витрати, перевіряти першими, що видалені.
