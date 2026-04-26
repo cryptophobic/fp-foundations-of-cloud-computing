@@ -3,63 +3,7 @@
 ## 1. Розробіть архітектуру вашого рішення
 
  - Намалюйте схему, яка показує, як різні сервіси AWS взаємодіють між собою.
-```mermaid
-flowchart TB
-    User([Internet User])
-
-    subgraph VPC["AWS VPC (10.0.0.0/16)"]
-        direction TB
-
-        subgraph Public["Public Subnets (AZ-a / AZ-b)"]
-            ALB["Application Load Balancer"]
-            NAT["NAT Gateway"]
-        end
-
-        subgraph PrivateApp["Private App Subnets (AZ-a / AZ-b)"]
-            ECS1["ECS Fargate Task<br/>(AZ-a)"]
-            ECS2["ECS Fargate Task<br/>(AZ-b)"]
-        end
-
-        subgraph PrivateDB["Private DB Subnets (AZ-a / AZ-b)"]
-            RDS[("Amazon RDS<br/>PostgreSQL<br/>Multi-AZ")]
-        end
-    end
-
-    ECR[("Amazon ECR")]
-    CW["CloudWatch<br/>Logs & Metrics"]
-    SNS["SNS Topic<br/>(email alerts)"]
-    Budgets["AWS Budgets /<br/>Cost Explorer"]
-    ASG["ECS Service<br/>Auto Scaling"]
-
-    User -->|HTTP :80| ALB
-    ALB -->|HTTP :8080| ECS1
-    ALB -->|HTTP :8080| ECS2
-    ECS1 -->|TCP :5432| RDS
-    ECS2 -->|TCP :5432| RDS
-    ECS1 -.pull image.-> ECR
-    ECS2 -.pull image.-> ECR
-    ECS1 -.NAT egress.-> NAT
-    ECS2 -.NAT egress.-> NAT
-
-    ECS1 -.logs/metrics.-> CW
-    ECS2 -.logs/metrics.-> CW
-    ALB  -.logs/metrics.-> CW
-    RDS  -.logs/metrics.-> CW
-
-    CW -->|alarm| SNS
-    CW -->|target tracking| ASG
-    ASG -.scales.-> ECS1
-    ASG -.scales.-> ECS2
-
-    Budgets -.cost monitoring.-> VPC
-
-    classDef public fill:#e8f4ff,stroke:#1f77b4
-    classDef private fill:#eef7ee,stroke:#2ca02c
-    classDef db fill:#fff4e6,stroke:#ff7f0e
-    class Public public
-    class PrivateApp private
-    class PrivateDB db
-```
+![Архітектурна схема: VPC, публічні/приватні підмережі, ALB → ECS Fargate → RDS, моніторинг через CloudWatch/SNS, Auto Scaling, Cost Explorer/Budgets. Mermaid-джерело — у `architecture.mmd`.](screenshots/mermaid.png)
  - Визначте, який стек технологій буде використовуватися. Обґрунтуйте свій вибір.
 
 | Вимога TASK.md | Рішення | Обґрунтування |
@@ -1541,6 +1485,21 @@ cryptophobic@Dmitros-MBP FP % aws cloudwatch get-metric-statistics --region us-e
   --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
   --period 60 --statistics Average Maximum \
   --query 'sort_by(Datapoints, &Timestamp)[*].[Timestamp,Average,Maximum]' --output table
+
+------------------------------------------------------------------------------
+|                             GetMetricStatistics                            |
++---------------------------+------------------------+-----------------------+
+|  2026-04-26T14:06:00+03:00|  0.020825151354074478  |  0.06591092795133591  |
+|  2026-04-26T14:07:00+03:00|  0.020903453851739567  |  0.06597615778446198  |
+|  2026-04-26T14:08:00+03:00|  0.025551875432332356  |  0.08851103484630585  |
+|  2026-04-26T14:09:00+03:00|  0.02022180954615275   |  0.0621839314699173   |
+|  2026-04-26T14:10:00+03:00|  0.021816977610190712  |  0.07064568251371384  |
+|  2026-04-26T14:11:00+03:00|  0.020987498263518013  |  0.06644108891487122  |
+|  2026-04-26T14:12:00+03:00|  0.020433304831385612  |  0.0653209537267685   |
+|  2026-04-26T14:13:00+03:00|  0.022713165109356247  |  0.07737977057695389  |
+|  2026-04-26T14:14:00+03:00|  0.04314500962694486   |  0.19759134948253632  |
+|  2026-04-26T14:15:00+03:00|  0.02480392282207807   |  0.08120285719633102  |
++---------------------------+------------------------+-----------------------+
 ```
 
 | Час (Київ) | Avg CPU % | Max CPU % |
